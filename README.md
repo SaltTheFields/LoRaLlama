@@ -152,27 +152,12 @@ The web dashboard runs on port 5000 and includes:
 
 ## Architecture
 
-```
-┌─────────────────┐         ┌──────────────┐
-│  Meshtastic     │  BLE/   │              │
-│  Radio          │◄─Serial─┤  Bridge      │
-│  (LoRa mesh)    │  /TCP   │  (llm_mesh_  │
-└─────────────────┘         │   bridge.py) │
-                            │              │
-                            │  ┌─────────┐ │     ┌───────────┐
-                            │  │ LLM     │ │     │ Ollama /  │
-                            │  │ Handler ├─┼────►│ Claude /  │
-                            │  └─────────┘ │     │ OpenAI    │
-                            │              │     └───────────┘
-                            │  ┌─────────┐ │
-                            │  │ SQLite  │ │
-                            │  │ mesh_   ├─┼──┐
-                            │  │ data.db │ │  │
-                            │  └─────────┘ │  │  ┌────────────┐
-                            └──────────────┘  │  │ Dashboard  │
-                                              └──┤ (Flask)    │
-                                                 │ :5000      │
-                                                 └────────────┘
+```mermaid
+graph LR
+    Radio["Meshtastic Radio<br>(LoRa mesh)"] <-->|BLE / Serial / TCP| Bridge["Bridge<br>(llm_mesh_bridge.py)"]
+    Bridge --> LLM["Ollama / Claude / OpenAI"]
+    Bridge <--> DB["SQLite<br>mesh_data.db"]
+    DB <--> Dashboard["Dashboard (Flask)<br>:5000"]
 ```
 
 Both processes share a single SQLite database (WAL mode) — the bridge writes packets and messages, the dashboard reads them for display.
