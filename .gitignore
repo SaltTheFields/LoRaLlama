@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Database
+*.db
+*.db-shm
+*.db-wal
+
+# Logs
+*.log
+
+# IDE / tools
+.claude/
+.pytest_cache/
+
+# Temp / generated files
+temp_*.py
+nul
+mesh_memory.json
+
+# Images not part of branding
+Gemini_Generated_Image_*
+
+# Dev scratch files
+logo_header_b64.txt
+logo_test.html
