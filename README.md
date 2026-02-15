@@ -10,10 +10,14 @@
 </p>
 
 <p align="center">
+  <img src="dashboard_screenshot.png" alt="LoRaLlama Dashboard" width="800">
+</p>
+
+<p align="center">
   <img src="https://img.shields.io/badge/python-3.12+-blue?logo=python" alt="Python 3.12+">
   <img src="https://img.shields.io/badge/meshtastic-LoRa-green?logo=data:image/svg+xml;base64," alt="Meshtastic">
   <img src="https://img.shields.io/badge/LLM-Ollama%20%7C%20Anthropic%20%7C%20OpenAI-orange" alt="LLM Providers">
-  <img src="https://img.shields.io/badge/license-MIT-lightgrey" alt="License">
+  <img src="https://img.shields.io/badge/license-GPLv3-blue" alt="License">
 </p>
 
 ---
@@ -40,6 +44,8 @@ LoRaLlama bridges an LLM to a [Meshtastic](https://meshtastic.org/) mesh radio n
 
 ```bash
 pip install meshtastic bleak requests flask flask-socketio
+# On Windows, you also need:
+pip install winrt
 ```
 
 For your LLM provider:
@@ -91,6 +97,16 @@ python llm_mesh_bridge.py --no-setup
 # Listen only (no auto-responses)
 python llm_mesh_bridge.py --no-auto
 ```
+
+### Bluetooth Pairing (Windows)
+
+To use Bluetooth on Windows, you must pair the device first:
+1. Open **Windows Settings > Bluetooth & devices**.
+2. Turn on your Meshtastic device.
+3. Click **Add device > Bluetooth**.
+4. Select your Meshtastic device from the list.
+5. Enter PIN `123456` when prompted.
+6. Once paired, `llm_mesh_bridge.py` will be able to connect to it.
 
 ## LLM Providers
 
@@ -189,6 +205,29 @@ export FLASK_SECRET_KEY=your-secret-here
 - **Content filtering** catches profanity, hate speech, scam attempts, and PII before the LLM processes or responds.
 - The database auto-migrates schema changes between versions.
 
+## Troubleshooting
+
+### Device not found
+- Ensure Bluetooth is enabled.
+- Pair the device first via Windows Settings (see Bluetooth Pairing section).
+- Try running `python llm_mesh_bridge.py --scan` to find the correct address.
+
+### Connection fails
+- Check the device is powered on and within range.
+- For serial: verify the COM port number in Device Manager.
+- For BLE: ensure the device is paired and not currently connected to another app (like the Meshtastic mobile app).
+
+### Messages not sending
+- Verify you're on the correct channel (default is channel 0 / LongFast).
+- Check signal strength (SNR/RSSI) to other nodes in the dashboard.
+- Keep messages under 237 bytes (the bridge auto-truncates to 200).
+
+## References
+
+- [Meshtastic Python API](https://python.meshtastic.org/)
+- [Meshtastic BLE Interface](https://python.meshtastic.org/ble_interface.html)
+- [Channel Configuration](https://meshtastic.org/docs/configuration/radio/channels/)
+
 ## Requirements
 
 - Python 3.12+
@@ -196,6 +235,12 @@ export FLASK_SECRET_KEY=your-secret-here
 - Bluetooth, USB, or network access to the radio
 - [Ollama](https://ollama.ai/) installed locally (for default provider), or an API key for Anthropic/OpenAI
 
+## Contributors
+
+- **[SaltTheFields](https://github.com/SaltTheFields)** - Lead developer
+- **[Gemini CLI](https://github.com/google-gemini/gemini-cli)** - AI development assistant
+- **[Claude](https://anthropic.com)** - AI development assistant
+
 ## License
 
-MIT
+GNU General Public License v3.0
