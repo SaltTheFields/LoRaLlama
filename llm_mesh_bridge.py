@@ -191,7 +191,7 @@ class ConversationMemory:
         self.conversations: Dict[str, deque] = {}  # user_id -> deque of messages
         self.user_facts: Dict[str, List[str]] = {}  # user_id -> list of remembered facts
         self.global_context: List[str] = []  # Global facts/context
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._load_memory()
 
     def _load_memory(self):
