@@ -1562,97 +1562,124 @@ class MeshDatabase:
 
     # ==================== CONTEXT BUILDING ====================
 
-    def build_context_for_llm(self, user_id: str, user_name: str) -> str:
-        """Build a comprehensive context string for LLM prompts."""
+    def build_context_for_llm(self, user_id: str, user_name: str, intent: str = 'question') -> str:
+        """Build context string for LLM prompts, gated by message intent.
+
+        Intent controls which sections are included to avoid flooding small models
+        with irrelevant data (e.g. stats on a casual greeting).
+
+        Context by intent:
+            greeting  — conversation history only
+            casual    — conversation history + user facts
+            question  — conversation history + user facts + global context + alerts
+            weather   — conversation history only (weather fetched separately)
+            signal    — conversation history + node/device info + telemetry
+            network   — everything
+        """
         parts = []
 
+        include_global = intent in ('question', 'network')
+        include_facts = intent in ('casual', 'question', 'network')
+        include_node = intent in ('signal', 'network')
+        include_telemetry = intent in ('signal', 'network')
+        include_health = intent in ('network',)
+        include_stats = intent in ('network',)
+        include_alerts = intent in ('question',)
+
         # Global context
-        global_ctx = self.get_global_context(limit=5)
-        if global_ctx:
-            parts.append("System context: " + "; ".join(global_ctx))
+        if include_global:
+            global_ctx = self.get_global_context(limit=5)
+            if global_ctx:
+                parts.append("System context: " + "; ".join(global_ctx))
 
         # User facts
-        facts = self.get_user_facts(user_id)
-        if facts:
-            fact_strs = [f"{f['fact_type']}: {f['fact_value']}" for f in facts[:5]]
-            parts.append(f"Known about {user_name}: " + "; ".join(fact_strs))
+        if include_facts:
+            facts = self.get_user_facts(user_id)
+            if facts:
+                fact_strs = [f"{f['fact_type']}: {f['fact_value']}" for f in facts[:5]]
+                parts.append(f"Known about {user_name}: " + "; ".join(fact_strs))
 
         # Node info (natural language to avoid LLM echoing labels)
-        node = self.get_node(user_id)
-        if node:
-            node_info = []
-            if node.get('hw_model'):
-                node_info.append(f"a {node['hw_model']}")
-            if node.get('battery_level'):
-                node_info.append(f"battery at {node['battery_level']}%")
-            if node.get('latitude') and node.get('longitude'):
-                node_info.append("has GPS position")
-            if node.get('times_heard'):
-                node_info.append(f"heard {node['times_heard']} times")
-            if node.get('role'):
-                node_info.append(f"role is {node['role']}")
-            if node.get('uptime_seconds'):
-                hours = node['uptime_seconds'] // 3600
-                node_info.append(f"uptime {hours}h")
-            if node_info:
-                parts.append(f"Their device is " + ", ".join(node_info))
+        if include_node:
+            node = self.get_node(user_id)
+            if node:
+                node_info = []
+                if node.get('hw_model'):
+                    node_info.append(f"a {node['hw_model']}")
+                if node.get('battery_level'):
+                    node_info.append(f"battery at {node['battery_level']}%")
+                if node.get('latitude') and node.get('longitude'):
+                    node_info.append("has GPS position")
+                if node.get('times_heard'):
+                    node_info.append(f"heard {node['times_heard']} times")
+                if node.get('role'):
+                    node_info.append(f"role is {node['role']}")
+                if node.get('uptime_seconds'):
+                    hours = node['uptime_seconds'] // 3600
+                    node_info.append(f"uptime {hours}h")
+                if node_info:
+                    parts.append(f"Their device is " + ", ".join(node_info))
 
         # Latest telemetry
-        try:
-            telemetry = self.get_telemetry_history(user_id, limit=1)
-            if telemetry:
-                t = telemetry[0]
-                tel_parts = []
-                if t.get('temperature'):
-                    tel_parts.append(f"{t['temperature']}C")
-                if t.get('relative_humidity'):
-                    tel_parts.append(f"{t['relative_humidity']}% humidity")
-                if t.get('channel_utilization'):
-                    tel_parts.append(f"channel util {t['channel_utilization']}%")
-                if tel_parts:
-                    parts.append("Latest sensor readings: " + ", ".join(tel_parts))
-        except:
-            pass
+        if include_telemetry:
+            try:
+                telemetry = self.get_telemetry_history(user_id, limit=1)
+                if telemetry:
+                    t = telemetry[0]
+                    tel_parts = []
+                    if t.get('temperature'):
+                        tel_parts.append(f"{t['temperature']}C")
+                    if t.get('relative_humidity'):
+                        tel_parts.append(f"{t['relative_humidity']}% humidity")
+                    if t.get('channel_utilization'):
+                        tel_parts.append(f"channel util {t['channel_utilization']}%")
+                    if tel_parts:
+                        parts.append("Latest sensor readings: " + ", ".join(tel_parts))
+            except:
+                pass
 
         # Network health summary
-        try:
-            conn = self._get_conn()
-            cursor = conn.cursor()
-            total = cursor.execute('SELECT COUNT(*) FROM nodes').fetchone()[0]
-            cutoff = int(time.time()) - (24 * 3600)
-            active = cursor.execute('SELECT COUNT(*) FROM nodes WHERE last_heard > ?', (cutoff,)).fetchone()[0]
-            parts.append(f"The mesh has {active} of {total} nodes active in the last 24h")
-        except:
-            pass
+        if include_health:
+            try:
+                conn = self._get_conn()
+                cursor = conn.cursor()
+                total = cursor.execute('SELECT COUNT(*) FROM nodes').fetchone()[0]
+                cutoff = int(time.time()) - (24 * 3600)
+                active = cursor.execute('SELECT COUNT(*) FROM nodes WHERE last_heard > ?', (cutoff,)).fetchone()[0]
+                parts.append(f"The mesh has {active} of {total} nodes active in the last 24h")
+            except:
+                pass
 
         # User's message stats
-        try:
-            from datetime import timedelta as td
-            conn = self._get_conn()
-            cursor = conn.cursor()
-            user_msg_count = cursor.execute(
-                'SELECT COUNT(*) FROM messages WHERE from_id = ?', (user_id,)
-            ).fetchone()[0]
-            two_hours_ago = (datetime.now() - td(hours=2)).isoformat()
-            recent_count = cursor.execute(
-                'SELECT COUNT(*) FROM messages WHERE from_id = ? AND timestamp > ?',
-                (user_id, two_hours_ago)
-            ).fetchone()[0]
-            parts.append(f"This user has sent {user_msg_count} total messages, {recent_count} in the last 2 hours")
-        except:
-            pass
+        if include_stats:
+            try:
+                from datetime import timedelta as td
+                conn = self._get_conn()
+                cursor = conn.cursor()
+                user_msg_count = cursor.execute(
+                    'SELECT COUNT(*) FROM messages WHERE from_id = ?', (user_id,)
+                ).fetchone()[0]
+                two_hours_ago = (datetime.now() - td(hours=2)).isoformat()
+                recent_count = cursor.execute(
+                    'SELECT COUNT(*) FROM messages WHERE from_id = ? AND timestamp > ?',
+                    (user_id, two_hours_ago)
+                ).fetchone()[0]
+                parts.append(f"This user has sent {user_msg_count} total messages, {recent_count} in the last 2 hours")
+            except:
+                pass
 
         # Recent detection alerts
-        try:
-            alerts = self.get_detection_alerts(limit=3)
-            if alerts:
-                alert_strs = [f"{a.get('sensor_name', a['from_id'])}: {a['alert_text']}" for a in alerts]
-                parts.append("Recent alerts: " + "; ".join(alert_strs))
-        except:
-            pass
+        if include_alerts:
+            try:
+                alerts = self.get_detection_alerts(limit=3)
+                if alerts:
+                    alert_strs = [f"{a.get('sensor_name', a['from_id'])}: {a['alert_text']}" for a in alerts]
+                    parts.append("Recent alerts: " + "; ".join(alert_strs))
+            except:
+                pass
 
-        # Conversation history
-        history = self.get_conversation_history(user_id, limit=6)
+        # Conversation history — always included
+        history = self.get_conversation_history(user_id, limit=4)
         if history:
             conv_parts = []
             for msg in history:

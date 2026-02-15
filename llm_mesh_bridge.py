@@ -96,15 +96,14 @@ LOCATION = "Austin, Texas"  # Change to your location
 TIMEZONE = "America/Chicago"  # Central Time
 
 # Default system prompt (can be customized via setup wizard)
-DEFAULT_SYSTEM_PROMPT = """You're a helpful AI assistant on a Meshtastic mesh radio network.
+DEFAULT_SYSTEM_PROMPT = """You are a friendly AI assistant on a LoRa mesh radio network.
 
 RULES:
-- Max 150 characters! Be VERY brief.
-- No emojis (cost 4 bytes each on LoRa radio).
-- Answer the user's ACTUAL question directly.
-- Use the provided context data ONLY when relevant to the question.
-- Do NOT echo back signal/device data unless specifically asked.
-- One short sentence answers only."""
+1. Keep responses under 150 characters. No emojis.
+2. Reply naturally to what the person said.
+3. If someone says hi, just say hi back warmly.
+4. Only mention stats or data if someone asks for it.
+5. Use the person's name naturally — never use @username."""
 
 # Will be set by setup wizard or use default
 SYSTEM_PROMPT = DEFAULT_SYSTEM_PROMPT
@@ -869,26 +868,20 @@ def build_system_prompt(config: dict) -> str:
     length_limit, length_desc = config['length']
     special = config.get('special', '')
 
-    prompt = f"""You are {name}, an AI on a Meshtastic mesh radio network (LongFast channel).
+    prompt = f"""You are {name}, a friendly AI on a LoRa mesh radio network.
 
 Personality: {personality_desc}.
-
 Purpose: {purpose}
 
-CRITICAL BYTE LIMITS (LoRa radio):
-- {length_desc}
-- AVOID EMOJIS - each one costs 4 bytes!
-- Be concise - every byte matters
-- Short sentences only
-
-Context data is injected below for reference. Use it to answer questions accurately.
-Do NOT echo raw context data - synthesize a natural answer instead.
-Only mention signal/device info when the user specifically asks about it."""
+RULES:
+1. {length_desc}. No emojis.
+2. Reply naturally to what the person said.
+3. If someone says hi, just say hi back warmly.
+4. Only mention stats or data if someone asks for it.
+5. Use the person's name naturally — never use @username."""
 
     if special:
         prompt += f"\n\nSpecial: {special}"
-
-    prompt += "\n\nHelp people stay connected. Keep it short!"
 
     return prompt
 
@@ -1028,6 +1021,60 @@ class LLMHandler:
         msg_lower = message.lower()
         return any(trigger in msg_lower for trigger in signal_triggers)
 
+    def _classify_intent(self, message: str) -> str:
+        """Classify message intent using keyword matching (no LLM call).
+
+        Returns one of: 'greeting', 'weather', 'signal', 'network', 'question', 'casual'
+        """
+        msg_lower = message.lower().strip()
+        # Strip punctuation for matching
+        msg_clean = re.sub(r'[^\w\s]', '', msg_lower).strip()
+        words = msg_clean.split()
+
+        # Greeting patterns — check first to prevent "how's the weather" false positives
+        greeting_words = {
+            'hi', 'hello', 'hey', 'howdy', 'yo', 'sup', 'hola',
+            'greetings', 'hiya', 'heya', 'aloha', 'ahoy'
+        }
+        greeting_phrases = [
+            'good morning', 'good afternoon', 'good evening', 'good night',
+            'gm', 'whats up', "what's up", 'you awake', 'anyone there',
+            'anyone home', 'anyone on', 'anyone around', 'whos on',
+            "who's on", 'whos there', "who's there"
+        ]
+        # Short messages starting with a greeting word
+        if words and words[0] in greeting_words and len(words) <= 6:
+            return 'greeting'
+        if any(msg_clean.startswith(p) for p in greeting_phrases):
+            return 'greeting'
+        # Very short casual messages (1-4 words, no question mark)
+        if len(words) <= 4 and '?' not in message:
+            if any(w in greeting_words for w in words):
+                return 'greeting'
+
+        # Weather — delegate to existing method
+        if self._is_weather_query(message):
+            return 'weather'
+
+        # Signal — delegate to existing method
+        if self._is_signal_query(message):
+            return 'signal'
+
+        # Network / mesh questions
+        network_keywords = [
+            'mesh', 'network', 'topology', 'nodes', 'node count',
+            'how many nodes', 'how many people', 'who else', 'active users'
+        ]
+        if any(kw in msg_lower for kw in network_keywords):
+            return 'network'
+
+        # General questions
+        if self._should_search(message):
+            return 'question'
+
+        # Default: casual conversation
+        return 'casual'
+
     def _extract_search_query(self, message: str) -> str:
         """Extract a search query from the message."""
         # Remove common prefixes
@@ -1089,10 +1136,14 @@ class LLMHandler:
 
         # Message already saved to DB in _on_message() — no duplicate save needed here
 
+        # Classify intent to control context injection
+        intent = self._classify_intent(message)
+        logger.info(f"[LLM] Intent classified as '{intent}' for: {message}")
+
         # Build context from database or memory
         context = ""
         if self.db:
-            context = self.db.build_context_for_llm(user_id, from_name)
+            context = self.db.build_context_for_llm(user_id, from_name, intent=intent)
         elif self.memory:
             context = self.memory.get_context_for_prompt(user_id, from_name)
             self.memory.add_message(user_id, from_name, 'user', message)
@@ -1128,52 +1179,53 @@ class LLMHandler:
             if signal_context:
                 logger.debug(f"[LLM] Signal context: {signal_context}")
 
-        # Build mesh health context (especially if they're asking about issues)
+        # Build mesh health context only for signal/network intents
         mesh_health = ""
-        network_keywords = ['mesh', 'network', 'topology', 'nodes', 'node count', 'how many']
-        if self._is_signal_query(message) or any(kw in message.lower() for kw in network_keywords):
+        if intent in ('signal', 'network'):
             mesh_health = build_mesh_health_context(self.db, self.connector)
             if mesh_health:
                 logger.debug(f"[LLM] Mesh health: {mesh_health}")
-            # Add detailed network summary for mesh/network questions
-            if self.db and any(kw in message.lower() for kw in network_keywords):
+            # Add detailed network summary for network questions
+            if self.db and intent == 'network':
                 net_summary = self.db.build_network_summary_for_llm()
                 if net_summary:
                     mesh_health = (mesh_health + "\n" + net_summary) if mesh_health else net_summary
                     logger.debug("[LLM] Network summary added")
 
-        # Build the full prompt
+        # Build the full prompt — message first, then relevant data
         prompt_parts = []
 
         # Always include current date/time info
         prompt_parts.append(get_current_datetime_info())
 
-        # Include signal info only when user asks about signal/connection
-        if signal_context and self._is_signal_query(message):
-            prompt_parts.append(signal_context)
-
-        # Include mesh health if relevant
-        if mesh_health:
-            prompt_parts.append(mesh_health)
-
-        # Include weather if requested
-        if weather_info:
-            prompt_parts.append(weather_info)
-
+        # Conversation context (history, facts, etc.)
         if context:
             prompt_parts.append(f"Context:\n{context}")
+
+        # The actual message
+        prompt_parts.append(f"{from_name} says: {message}")
+
+        # Relevant data AFTER the message so the model connects them
+        data_parts = []
+        if signal_context and intent == 'signal':
+            data_parts.append(signal_context)
+        if mesh_health:
+            data_parts.append(mesh_health)
+        if weather_info:
+            data_parts.append(weather_info)
         if web_info:
-            prompt_parts.append(f"Research:{web_info}")
-        prompt_parts.append(f"Current message from {from_name}: {message}")
-        prompt_parts.append(f"IMPORTANT: The sender's name is \"{from_name}\". If you address them, use \"{from_name}\" - never use placeholders like @username.")
+            data_parts.append(f"Research:{web_info}")
+        if data_parts:
+            prompt_parts.append("Use this data to answer:\n" + "\n".join(data_parts))
 
         full_prompt = "\n\n".join(prompt_parts)
         logger.debug(f"[LLM] Full prompt length: {len(full_prompt)} chars")
 
-        # Generate response
-        logger.info("[LLM] Calling LLM API...")
+        # Generate response — use fewer tokens for simple intents
+        max_tokens = 80 if intent in ('greeting', 'casual') else 256
+        logger.info(f"[LLM] Calling LLM API (intent={intent}, max_tokens={max_tokens})...")
         start_time = time.time()
-        response_text = self._call_llm(full_prompt)
+        response_text = self._call_llm(full_prompt, max_tokens=max_tokens)
         elapsed = time.time() - start_time
         logger.info(f"[LLM] Response generated in {elapsed:.2f}s: {response_text[:100]}...")
 
@@ -1229,12 +1281,12 @@ class LLMHandler:
                     self.memory.remember_fact(user_id, fact)
                 logger.info(f"[LLM] Remembered about {user_name}: {fact}")
 
-    def _call_llm(self, prompt: str) -> str:
+    def _call_llm(self, prompt: str, max_tokens: int = 256) -> str:
         """Call the LLM provider with the given prompt."""
         if self.provider == "ollama":
             try:
                 import requests
-                logger.debug(f"[LLM] Calling Ollama model={self.model}")
+                logger.debug(f"[LLM] Calling Ollama model={self.model} max_tokens={max_tokens}")
                 response = requests.post(
                     f"{self.base_url}/api/chat",
                     json={
@@ -1245,7 +1297,8 @@ class LLMHandler:
                         ],
                         "stream": False,
                         "options": {
-                            "num_predict": 256  # Limit response length
+                            "num_predict": max_tokens,
+                            "temperature": 0.7
                         }
                     },
                     timeout=60
@@ -1265,7 +1318,7 @@ class LLMHandler:
             try:
                 response = self.client.messages.create(
                     model="claude-3-haiku-20240307",
-                    max_tokens=256,
+                    max_tokens=max_tokens,
                     system=self.system_prompt,
                     messages=[{"role": "user", "content": prompt}]
                 )
@@ -1278,7 +1331,7 @@ class LLMHandler:
             try:
                 response = self.client.chat.completions.create(
                     model="gpt-3.5-turbo",
-                    max_tokens=256,
+                    max_tokens=max_tokens,
                     messages=[
                         {"role": "system", "content": self.system_prompt},
                         {"role": "user", "content": prompt}
