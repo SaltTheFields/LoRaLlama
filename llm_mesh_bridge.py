@@ -1438,6 +1438,12 @@ class MeshLLMBridge:
                 logger.debug(f"[BRIDGE] Skipping packet with no from_id: {packet_type}")
                 return
 
+            # Update node last_heard from any received packet — the node.updated
+            # pubsub event only fires during initial sync, not on ongoing traffic
+            rx_time = packet.get('rxTime') or int(time.time())
+            if self.llm.db:
+                self.llm.db.touch_node_last_heard(from_id, rx_time)
+
             decoded = packet.get('decoded', {})
 
             if packet_type == 'POSITION_APP':

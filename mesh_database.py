@@ -780,6 +780,27 @@ class MeshDatabase:
         self._update_last_modified()
         logger.debug(f"[DB] Node {node_id} saved (heard {times_heard} times)")
 
+    def touch_node_last_heard(self, node_id: str, timestamp: int):
+        """Update last_heard for a node from any received packet (telemetry, position, message).
+
+        The meshtastic.node.updated pubsub event only fires during initial sync,
+        so we need to update last_heard whenever we get any packet from a node.
+        """
+        try:
+            conn = self._get_conn()
+            cursor = conn.cursor()
+            cursor.execute('''
+                UPDATE nodes SET last_heard = MAX(COALESCE(last_heard, 0), ?),
+                                 times_heard = COALESCE(times_heard, 0) + 1,
+                                 last_updated = ?
+                WHERE node_id = ?
+            ''', (timestamp, datetime.now().isoformat(), node_id))
+            if cursor.rowcount > 0:
+                conn.commit()
+                self._update_last_modified()
+        except Exception as e:
+            logger.debug(f"[DB] touch_node_last_heard failed for {node_id}: {e}")
+
     def get_node(self, node_id: str) -> Optional[Dict]:
         """Get a specific node by ID."""
         conn = self._get_conn()
